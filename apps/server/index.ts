@@ -2,8 +2,8 @@ import express, { Request, Response } from "express";
 import dotenv from "dotenv";
 import { EC2 } from "@aws-sdk/client-ec2";
 import { SSM } from "@aws-sdk/client-ssm";
+import { Route53 } from "@aws-sdk/client-route-53";
 import cors from "cors";
-
 dotenv.config();
 
 const app = express();
@@ -11,6 +11,7 @@ app.use(cors());
 app.use(express.json());
 const ssm = new SSM({ region: "us-east-1" });
 const ec2 = new EC2({ region: "us-east-1" });
+const route53 = new Route53({ region: "us-east-1" });
 
 const userSSEConnections = new Map();
 
@@ -45,6 +46,44 @@ const generateEC2Instance = async () => {
     SecurityGroups: ["Deployment-App"], // Inbound: Custom TCP Port 3002 Allow All, SSH TCP Port 22 Allow All. Outbound: All traffic
   });
   return data;
+};
+
+const createSubdomain = () => {
+  let result = "";
+
+  for (let i = 0; i < 6; i++) {
+    result += String.fromCharCode(
+      Math.floor(Math.random() * (122 - 97 + 1) + 97)
+    );
+  }
+  return result;
+};
+
+const updateDNSRecord = (ec2IPAddress: string) => {
+  const url = `${createSubdomain()}.app-deploy.com`;
+
+  route53.changeResourceRecordSets({
+    HostedZoneId: "Z06304079TDZZTJHYANC",
+    ChangeBatch: {
+      Changes: [
+        {
+          Action: "CREATE",
+          ResourceRecordSet: {
+            Name: url,
+            Type: "A",
+            TTL: 300,
+            ResourceRecords: [
+              {
+                Value: ec2IPAddress,
+              },
+            ],
+          },
+        },
+      ],
+    },
+  });
+
+  return `http://${url}:3002`;
 };
 
 const startServer = async (
@@ -108,7 +147,8 @@ app.post("/generate", async (req: Request, res: Response) => {
       const publicIPAddress =
         instanceData?.Reservations?.[0]?.Instances?.[0]?.PublicIpAddress;
       if (publicIPAddress) {
-        const url = `http://${publicIPAddress}:3002`;
+        const newURL = updateDNSRecord(publicIPAddress);
+        const url = newURL;
         const interval = setInterval(async () => {
           try {
             const res = await fetch(url);
